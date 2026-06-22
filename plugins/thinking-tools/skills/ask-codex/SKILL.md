@@ -6,7 +6,7 @@ allowed-tools: Bash, Read, Grep, Glob
 
 # Ask Codex
 
-Consult OpenAI Codex (GPT-5) as a second opinion for investigation, debugging, or review tasks.
+Consult OpenAI Codex (GPT-5.5) as a second opinion for investigation, debugging, or review tasks.
 
 ## Activation Triggers
 
@@ -35,11 +35,21 @@ Gather context from the current conversation:
 3. **What we tried** — approaches attempted and why they failed (if applicable)
 4. **Specific question** — what exactly codex should analyze or answer
 
-If CLAUDE.md exists in the project, it will be passed as project context.
+Codex does NOT auto-load Claude Code's memory files — it only reads `AGENTS.md`. To give Codex the same project context Claude follows, prepend the memory-load preamble described in Step 3.
 
 ### Step 3: Construct Prompt
 
 Build a focused prompt. Do NOT dump entire files — codex has full project access and can read them itself. Provide file paths and line references so codex knows where to look.
+
+**Prepend a memory-load preamble.** Codex auto-loads only `AGENTS.md`; it does NOT read Claude Code's memory files (`CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/`, `~/.claude/CLAUDE.md`), so the project conventions Claude follows are invisible to Codex unless you tell it to read them. Prepend this line to the prompt:
+
+```
+First read these project guidance files if present: <ABS_HOME>/.claude/CLAUDE.md, CLAUDE.md, CLAUDE.local.md, .claude/rules/
+```
+
+- Resolve `<ABS_HOME>` to the **absolute** home path (run `echo $HOME`, e.g. `/home/<user>`) and write the literal path — do NOT leave the string `$HOME` in the prompt. Whether `$HOME` expands depends on how the prompt is passed to Codex, and Codex may open the file with a non-shell tool that never expands it, so only a literal absolute path is reliable.
+- No `@` prefix — `@file` is inert in `codex exec` (literal text, not an import).
+- The project-relative paths resolve against Codex's working directory; Codex skips any that don't exist.
 
 **Template for investigation/debug:**
 
@@ -157,14 +167,13 @@ Run codex in background (it takes 2-5 minutes for complex analysis):
 ```bash
 codex exec -m gpt-5.5 \
   --sandbox read-only \
-  -c model_reasoning_effort="high" \
+  -c model_reasoning_effort="xhigh" \
   -c stream_idle_timeout_ms=600000 \
-  -c project_doc="$HOME/.claude/CLAUDE.md" \
-  -c project_doc="./CLAUDE.md" \
-  "prompt here"
+  "prompt here" < /dev/null
 ```
 
 **Execution rules:**
+- Always end the invocation with `< /dev/null` (as shown). `codex exec` reads stdin to append a `<stdin>` block even when the prompt is a positional arg, so an inherited open pipe (common under a background launch) never closes and codex blocks forever on "Reading additional input from stdin…"; `/dev/null` gives immediate EOF.
 - Always use `run_in_background: true` in Bash tool
 - Monitor with BashOutput every 15-20 seconds
 - Be patient during reasoning phase (1-3 minutes of silence is normal)
@@ -173,8 +182,7 @@ codex exec -m gpt-5.5 \
 **Flags:**
 - `--sandbox read-only` — codex can read all project files but cannot modify anything
 - `-m gpt-5.5` — latest model (adjust as newer versions become available)
-- `model_reasoning_effort="high"` — maximum reasoning depth
-- `project_doc` — passes CLAUDE.md as project context (both global and local if present)
+- `model_reasoning_effort="xhigh"` — deepest reasoning tier
 
 ### Step 5: Present Results
 
@@ -249,3 +257,4 @@ Parse the JSON output and present findings sorted by severity, filtered by confi
 - **Authentication**: `codex login` if getting auth errors
 - **Timeout**: increase `stream_idle_timeout_ms` for complex analyses
 - **Off-target response**: refine prompt with more specific file:line references
+- **Hangs on "Reading additional input from stdin…"**: the invocation is missing the `< /dev/null` stdin redirect — add it (see Step 4).
