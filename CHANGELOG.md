@@ -4,6 +4,13 @@ This repo ships independent Claude Code plugins. Version headings use values fro
 
 Entries are sorted by plugin version date, newest first.
 
+## planning v3.8.0 - 2026-06-28
+
+### New Features
+
+- plan-review overlay: add a `herdr` terminal backend to `launch-plan-review.sh`. Opens revdiff in a new fullscreen tab via the herdr CLI (`tab create` / `pane run` / `tab close`), blocking on a sentinel file until the overlay closes, so `/planning:make` interactive review and the `ExitPlanMode` hook work inside herdr sessions. #31
+- plan-review overlay: add an `agterm` terminal backend to `launch-plan-review.sh`. Opens revdiff in a full-pane overlay via `agtermctl session overlay open --block` and toggles the session status indicator to blocked while the overlay is up, restoring active on exit.
+
 ## planning v3.7.8 - 2026-06-23
 
 ### Bug Fixes

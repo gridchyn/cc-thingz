@@ -2,7 +2,7 @@
 # launch revdiff for plan file review via terminal overlay.
 # usage: launch-plan-review.sh <plan-file-path>
 # output: annotations from revdiff stdout (empty if no annotations)
-# supports: tmux, zellij, kitty, wezterm/kaku, cmux, ghostty, iTerm2, emacs vterm
+# supports: agterm, tmux, zellij, herdr, kitty, wezterm/kaku, cmux, ghostty, iTerm2, emacs vterm
 
 set -euo pipefail
 
@@ -45,6 +45,26 @@ OVERLAY_TITLE="plan: $(basename "$PLAN_FILE")"
 POPUP_W="${REVDIFF_POPUP_WIDTH:-90%}"
 POPUP_H="${REVDIFF_POPUP_HEIGHT:-90%}"
 
+# agterm: `agtermctl session overlay open <cmd> --block` opens revdiff in a full-pane
+# overlay over the agent's own session and blocks until it exits — like tmux's
+# display-popup -E, so no sentinel is needed. checked first so an agterm session always
+# uses its native overlay even when a multiplexer is also present. needs $AGTERM_SESSION_ID
+# (set in every agterm session) and agtermctl on PATH; passes $AGTERM_SOCKET so it reaches
+# the agterm instance hosting this session, and --cwd "$CWD" so the overlay runs in the
+# launcher's directory. sets the session status indicator to blocked while the overlay is
+# up and restores active on every exit path.
+if [ -n "${AGTERM_SESSION_ID:-}" ] && command -v agtermctl >/dev/null 2>&1; then
+    AGTERM_TARGET=(--target "$AGTERM_SESSION_ID")
+    [ -n "${AGTERM_SOCKET:-}" ] && AGTERM_TARGET+=(--socket "$AGTERM_SOCKET")
+    agtermctl session status blocked --blink "${AGTERM_TARGET[@]}" >/dev/null 2>&1 || true
+    trap 'agtermctl session status active "${AGTERM_TARGET[@]}" >/dev/null 2>&1 || true; rm -f "$OUTPUT_FILE"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    agtermctl session overlay open "$REVDIFF_CMD" "${AGTERM_TARGET[@]}" --cwd "$CWD" --block >/dev/null || true
+    cat "$OUTPUT_FILE"
+    exit 0
+fi
+
 # tmux: display-popup -E blocks until command exits
 if [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
     # -T (title) requires tmux 3.3+; skip on older versions
@@ -81,6 +101,73 @@ LAUNCHER
     while [ ! -f "$SENTINEL" ]; do
         sleep 0.3
     done
+    rm -f "$SENTINEL" "$LAUNCH_SCRIPT"
+    cat "$OUTPUT_FILE"
+    exit 0
+fi
+
+# herdr: open a new fullscreen tab via the herdr CLI (must precede kitty —
+# inside herdr-in-kitty KITTY_LISTEN_ON is set, so the kitty branch would
+# otherwise win and open an overlay window herdr cannot composite into its panes)
+if [ "${HERDR_ENV:-}" = "1" ] && command -v herdr >/dev/null 2>&1; then
+    SENTINEL=$(mktemp "$TMPBASE/plan-review-done-XXXXXX")
+    rm -f "$SENTINEL"
+
+    LAUNCH_SCRIPT=$(mktemp "$TMPBASE/plan-review-launch-XXXXXX")
+    trap 'rm -f "$OUTPUT_FILE" "$SENTINEL" "$LAUNCH_SCRIPT"' EXIT
+    cat > "$LAUNCH_SCRIPT" <<LAUNCHER
+#!/bin/sh
+$REVDIFF_CMD; touch $(sq "$SENTINEL")
+LAUNCHER
+    chmod +x "$LAUNCH_SCRIPT"
+
+    # pin the tab to the caller's workspace: without --workspace, herdr tab create
+    # targets the server's focused workspace (what the user is currently viewing),
+    # not the caller's workspace
+    HERDR_TAB_ARGS=(tab create --cwd "$CWD" --label "$OVERLAY_TITLE")
+    [ -n "${HERDR_WORKSPACE_ID:-}" ] && HERDR_TAB_ARGS+=(--workspace "$HERDR_WORKSPACE_ID")
+    HERDR_TAB_ARGS+=(--focus)
+    HERDR_NEW=$(herdr "${HERDR_TAB_ARGS[@]}" 2>&1) || {
+        echo "error: herdr tab create failed: $HERDR_NEW" >&2
+        exit 1
+    }
+    # parse the ids: jq when available, falling back to grep when jq is absent OR
+    # yields empty (e.g. herdr mixed a stderr line into the JSON via 2>&1). || true
+    # keeps a parse miss from tripping set -e so the explicit id check below stays
+    # reachable to emit a real error and close any created tab
+    HERDR_TAB_ID=""
+    HERDR_PANE_ID=""
+    if command -v jq >/dev/null 2>&1; then
+        HERDR_TAB_ID=$(printf '%s' "$HERDR_NEW" | jq -r '.result.tab.tab_id // empty' 2>/dev/null || true)
+        HERDR_PANE_ID=$(printf '%s' "$HERDR_NEW" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null || true)
+    fi
+    if [ -z "$HERDR_TAB_ID" ]; then
+        HERDR_TAB_ID=$(printf '%s' "$HERDR_NEW" | grep -o '"tab_id":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+    fi
+    if [ -z "$HERDR_PANE_ID" ]; then
+        HERDR_PANE_ID=$(printf '%s' "$HERDR_NEW" | grep -o '"pane_id":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+    fi
+
+    if [ -z "$HERDR_PANE_ID" ] || [ -z "$HERDR_TAB_ID" ]; then
+        echo "error: herdr tab create did not return pane/tab ids: $HERDR_NEW" >&2
+        if [ -n "$HERDR_TAB_ID" ]; then
+            herdr tab close "$HERDR_TAB_ID" >/dev/null 2>&1 || true
+        fi
+        rm -f "$SENTINEL" "$LAUNCH_SCRIPT"
+        exit 1
+    fi
+
+    if ! herdr pane run "$HERDR_PANE_ID" "sh $(sq "$LAUNCH_SCRIPT")" >/dev/null 2>&1; then
+        echo "error: herdr pane run failed for pane $HERDR_PANE_ID" >&2
+        herdr tab close "$HERDR_TAB_ID" >/dev/null 2>&1 || true
+        rm -f "$SENTINEL" "$LAUNCH_SCRIPT"
+        exit 1
+    fi
+
+    while [ ! -f "$SENTINEL" ]; do
+        sleep 0.3
+    done
+    herdr tab close "$HERDR_TAB_ID" >/dev/null 2>&1 || true
     rm -f "$SENTINEL" "$LAUNCH_SCRIPT"
     cat "$OUTPUT_FILE"
     exit 0
@@ -347,5 +434,5 @@ LAUNCHER
     exit 0
 fi
 
-echo "error: no overlay terminal available (requires tmux, zellij, kitty, wezterm, kaku, cmux, ghostty, iTerm2, or emacs vterm)" >&2
+echo "error: no overlay terminal available (requires agterm, tmux, zellij, herdr, kitty, wezterm, kaku, cmux, ghostty, iTerm2, or emacs vterm)" >&2
 exit 1

@@ -215,7 +215,7 @@ allow_remote_control yes
 listen_on unix:/tmp/kitty-$KITTY_PID
 ```
 
-*Note*: when `revdiff` is installed, the `ExitPlanMode` hook and `/planning:make` interactive review both route through `launch-plan-review.sh` instead, which supports a wider set of overlays: tmux, zellij, kitty, wezterm/kaku, cmux, ghostty, iTerm2, and emacs vterm. The 3-terminal list above applies only to the `$EDITOR` fallback when revdiff is not installed.
+*Note*: when `revdiff` is installed, the `ExitPlanMode` hook and `/planning:make` interactive review both route through `launch-plan-review.sh` instead, which supports a wider set of overlays: agterm, tmux, zellij, herdr, kitty, wezterm/kaku, cmux, ghostty, iTerm2, and emacs vterm. The 3-terminal list above applies only to the `$EDITOR` fallback when revdiff is not installed.
 
 The overlay popup size is configurable via env vars:
 
