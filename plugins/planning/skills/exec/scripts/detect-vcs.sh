@@ -37,7 +37,24 @@ if [ -n "$repo" ]; then
 fi
 # --- end multi-repo ---
 
-if git rev-parse --git-dir >/dev/null 2>&1; then
+# git detection. With --repo (multi-repo targeting) the directory must be the git
+# TOP-LEVEL, not a nested subdir: `git rev-parse --git-dir` walks up, so a plain
+# subdir of an enclosing repo would otherwise resolve to that repo. The bare call
+# (single-repo) keeps the walk-up behavior so it works from any subdir, unchanged.
+git_ok() {
+    if [ -n "$repo" ]; then
+        local top here
+        top="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+        [ -n "$top" ] || return 1
+        top="$(cd "$top" 2>/dev/null && pwd -P)" || return 1
+        here="$(pwd -P)"
+        [ "$top" = "$here" ]
+    else
+        git rev-parse --git-dir >/dev/null 2>&1
+    fi
+}
+
+if git_ok; then
     echo "git"
 elif command -v hg >/dev/null 2>&1 && hg root >/dev/null 2>&1; then
     echo "hg"

@@ -148,17 +148,18 @@ The script creates a feature branch if currently on main/master, or stays on the
 
 **Multi-repo:** do NOT run the single-repo `create-branch.sh <plan>` above. Instead branch every sibling repo in place, atomically:
 
-1. Build a spec list `<dir>=<branch>` from the repo table (Step 1b).
+1. Build a spec list `<dir>=<branch>` from the repo table (Step 1b). Here and below, `<dir>` is the `workspace_root`-joined path (just the repo dir when `workspace_root` is `.`).
 2. **Pre-flight (mandatory, read-only, atomic):**
    ```
-   bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/preflight-repos.sh <dir1>=<branch1> <dir2>=<branch2> ...
+   bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/preflight-repos.sh --root . --plan <plan-file-path> <dir1>=<branch1> <dir2>=<branch2> ...
    ```
-   If it exits non-zero, STOP before creating ANY branch and report the `FAIL:` line(s) verbatim — never leave a half-branched set. Show any `WARN:` lines to the user (e.g. a repo already on a different feature branch) but continue.
+   `--root .` advisory-checks the workspace-root repo (the one holding the plan). If the command exits non-zero, STOP before creating ANY branch and report the `FAIL:` line(s) verbatim — never leave a half-branched set. Show any `WARN:` lines to the user (e.g. a repo already on a different feature branch, or the workspace root dirty beyond the plan) but continue.
 3. Only if pre-flight passed, create/switch each repo's branch:
    ```
    bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/create-branch.sh --repo <dir> --branch <branch> <plan-file-path>
    ```
    Capture each repo's branch. If any `create-branch.sh` exits non-zero, STOP and report which repo failed.
+4. Record each repo's HEAD immediately after branching as its **START SHA**: `git -C <dir> rev-parse HEAD`. Keep the per-repo START SHA for touched-repo detection in Step 7.
 
 Report the per-repo branch set to the user.
 
@@ -190,7 +191,7 @@ Repeat until no `[ ]` checkboxes remain in any Task section:
    - `mode: "bypassPermissions"`
    - `subagent_type: "general-purpose"`
    - The task prompt from `prompts/task.md`, with all placeholders substituted as described in the Placeholder Substitution section above (including `USER_RULES` and `TARGET_REPO`)
-   - **Multi-repo:** set `TARGET_REPO` to the current task's `**Repo:**` value (read the `**Repo:**` line under the `### Task N:` header). It MUST be one of the repos in the table from Step 1b — if a task has no `**Repo:**`, or names an unknown repo, STOP and report. Single-repo: `TARGET_REPO` is `.`.
+   - **Multi-repo:** set `TARGET_REPO` to the current task's `**Repo:**` value, joined with `workspace_root` when that is not `.` (so `TARGET_REPO` is the path the subagent can `cd` into and `git -C` from cwd). Read the `**Repo:**` line under the `### Task N:` header; it MUST be one of the repos in the table from Step 1b — if a task has no `**Repo:**`, or names an unknown repo, STOP and report. Single-repo: `TARGET_REPO` is `.`.
 6. **After subagent returns**, re-read the plan file and check if that task's checkboxes are now `[x]`
    - If yes — task succeeded, continue loop
    - If no — **retry** with a fresh subagent for the same task up to `task_retries` times (userConfig, default: 1). If all retries fail, stop and report failure to user
@@ -208,7 +209,7 @@ Maximum iterations safety limit: 50. If reached, stop and report to user.
 
 After all tasks complete, run a comprehensive code review on iteration 1, then narrow to critical-only re-checks on subsequent iterations to verify the fixer's work without re-running the full heavy sweep.
 
-**Multi-repo:** run Steps 7–11 **once per touched repo**. A repo is "touched" if it has commits on its feature branch — check `git -C <dir> log <base>..HEAD --oneline` (non-empty). Skip untouched repos. For each touched repo, substitute `TARGET_REPO=<dir>` and `DEFAULT_BRANCH=<base>` (that repo's base) everywhere in this phase, and run the full loop below scoped to that repo. Announce each repo, e.g. "--- Review phase 1 [pgw-core-service]: comprehensive ---".
+**Multi-repo:** run Steps 7–11 **once per touched repo**. A repo is "touched" if THIS run added commits to it — check `bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/commits-since.sh <dir> <start-sha>` and treat `> 0` as touched, using the per-repo START SHA recorded in Step 4. (Do NOT use `<base>..HEAD` for this — it would miscount pre-existing commits that were already on a pre-existing feature branch.) Skip untouched repos. For each touched repo, substitute `TARGET_REPO=<dir>` and `DEFAULT_BRANCH=<base>` (that repo's base) everywhere in this phase, and run the full loop below scoped to that repo. Announce each repo, e.g. "--- Review phase 1 [pgw-core-service]: comprehensive ---".
 
 Report to user: "--- Review phase 1: comprehensive ---"
 

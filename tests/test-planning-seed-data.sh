@@ -162,6 +162,38 @@ assert_exit "missing plugin-root exits 0" "0" "$rc"
 [ -e "$DATA4/prompts/task.md" ] && seeded="yes" || seeded="no"
 assert_output "nothing seeded from missing root" "no" "$seeded"
 
+# test 8: pre-manifest upgrade force-seeds the current bundle once (fixes the
+# stale-copies-from-an-old-only-if-absent-install case), then writes a manifest
+echo ""
+echo "test 8: pre-manifest upgrade reconciles stale copies to the new bundle"
+ROOT5="$(mk_tmp)"
+DATA5="$(mk_tmp)"
+write_plugin "$ROOT5" "1.0.0" "OLD-BUNDLE"
+# simulate an OLD only-if-absent install: seeded copies exist, but NO manifest/stamp
+mkdir -p "$DATA5/prompts" "$DATA5/agents"
+printf 'OLD-BUNDLE\n' >"$DATA5/prompts/task.md"
+printf 'OLD-BUNDLE\n' >"$DATA5/agents/quality.txt"
+# new plugin version ships new prompt content
+write_plugin "$ROOT5" "2.0.0" "NEW-BUNDLE"
+bash "$SEED" "$DATA5" "$ROOT5"
+assert_output "pre-manifest: stale prompt reconciled to new bundle" "NEW-BUNDLE" "$(cat "$DATA5/prompts/task.md")"
+assert_output "pre-manifest: stale agent reconciled to new bundle" "NEW-BUNDLE" "$(cat "$DATA5/agents/quality.txt")"
+[ -f "$DATA5/.seed-manifest" ] && m=yes || m=no
+assert_output "pre-manifest: manifest now written for future upgrades" "yes" "$m"
+
+# test 9: on a host with no hash tool (weak size-only checksum), a same-size user
+# edit is never silently clobbered on upgrade (SEED_CSUM_TOOL=none forces weak mode)
+echo ""
+echo "test 9: weak-checksum host never clobbers a same-size user edit"
+ROOT6="$(mk_tmp)"
+DATA6="$(mk_tmp)"
+write_plugin "$ROOT6" "1.0.0" "AAAA"
+SEED_CSUM_TOOL=none bash "$SEED" "$DATA6" "$ROOT6"
+printf 'BBBB\n' >"$DATA6/prompts/task.md" # user edit, SAME byte count as AAAA
+write_plugin "$ROOT6" "2.0.0" "CCCC"       # new bundle, also same byte count
+SEED_CSUM_TOOL=none bash "$SEED" "$DATA6" "$ROOT6"
+assert_output "same-size edit preserved under weak checksum" "BBBB" "$(cat "$DATA6/prompts/task.md")"
+
 # summary
 echo ""
 echo "========================"
