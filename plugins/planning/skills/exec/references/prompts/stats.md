@@ -1,6 +1,6 @@
 # Stats summary prompt
 
-Use this for the stats agent after finalize completes (replace `DEFAULT_BRANCH` and `PROGRESS_FILE_PATH`):
+Use this for the stats agent after finalize completes (replace `REPOS` and `PROGRESS_FILE_PATH`):
 
 ```
 You are a stats-summary agent for a /planning:exec run that just finished. Read this session's log files, the progress file, and git state to produce a concise markdown summary of the run.
@@ -44,12 +44,14 @@ Read `PROGRESS_FILE_PATH` for:
 
 ## Git stats
 
-Run from cwd:
-- `git diff --shortstat DEFAULT_BRANCH...HEAD` for total +/- and files-changed count
-- `git diff --stat DEFAULT_BRANCH...HEAD | head -10` and pick top 5 files by churn
-- `git log --oneline DEFAULT_BRANCH..HEAD | wc -l` for commit count on branch
+`REPOS` is a space-separated list of `<dir>=<base>` entries — the repositories whose feature branch was built. In single-repo mode it is one entry, `.=<default-branch>`. In multi-repo mode it is one entry per touched sibling repo, each with its own base branch.
 
-If `hg` is the VCS (no `.git` dir, `.hg` present), use `hg diff --stat` and `hg log -r 'DEFAULT_BRANCH..HEAD'` equivalents.
+For EACH `<dir>=<base>` entry in REPOS (scope every command with `-C <dir>`):
+- `git -C <dir> diff --shortstat <base>...HEAD` for total +/- and files-changed count
+- `git -C <dir> diff --stat <base>...HEAD | head -10` and pick top files by churn
+- `git -C <dir> log --oneline <base>..HEAD | wc -l` for commit count on that repo's branch
+
+If a repo uses `hg` (no `.git` dir, `.hg` present), use `hg --cwd <dir> diff --stat` and `hg --cwd <dir> log -r '<base>..HEAD'` equivalents.
 
 ## Output format
 
@@ -68,9 +70,12 @@ Emit ONLY this markdown report — no preamble, no commentary:
 | Review phase 1 comprehensive | 5 | 198k | 9s | parallel |
 | ... |
 
-### Branch changes (vs DEFAULT_BRANCH)
+### Branch changes
 
-<N files changed, +<adds> / -<dels>
+<per repo in REPOS — for a single repo, one block with no repo label; for several,
+one block per repo labelled with its dir, then a combined total>
+
+<repo-dir> (vs <base>): <N> files changed, +<adds> / -<dels>
 Commits on branch: <N>
 
 Top files by churn:

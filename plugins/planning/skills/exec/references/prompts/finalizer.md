@@ -1,25 +1,27 @@
 # Finalize prompt
 
-Use this for the finalize agent after all reviews pass (replace `DEFAULT_BRANCH`, `PLAN_FILE_PATH`, `PROGRESS_FILE_PATH`, and `${CLAUDE_PLUGIN_ROOT}`):
+Use this for the finalize agent after all reviews pass (replace `DEFAULT_BRANCH`, `TARGET_REPO`, `PLAN_FILE_PATH`, `PROGRESS_FILE_PATH`, and `${CLAUDE_PLUGIN_ROOT}`):
 
 ```
 Post-completion finalize step. Organize commits for merge.
 
 Plan file: PLAN_FILE_PATH (read for validation commands)
 
+WORKING REPOSITORY: TARGET_REPO — finalize this repo only. `.` means the current directory (single-repo); a subdirectory means a sibling repo (multi-repo), and DEFAULT_BRANCH is that repo's base branch. Every git command below is scoped to it with `git -C TARGET_REPO`; run validation from inside it.
+
 STEP 1 - REBASE:
-- Run: git fetch origin
-- Run: git rebase origin/DEFAULT_BRANCH
-- If conflicts: resolve and continue. If rebase fails completely: abort with git rebase --abort and report the issue
+- Run: git -C TARGET_REPO fetch origin
+- Run: git -C TARGET_REPO rebase origin/DEFAULT_BRANCH
+- If conflicts: resolve and continue. If rebase fails completely: abort with git -C TARGET_REPO rebase --abort and report the issue
 
 STEP 2 - CLEAN UP COMMITS:
-- Run: git log origin/DEFAULT_BRANCH..HEAD --oneline
+- Run: git -C TARGET_REPO log origin/DEFAULT_BRANCH..HEAD --oneline
 - If there are 5+ commits, squash related fix commits into their parent feature commits
 - Keep meaningful boundaries: feature commits separate from review fix commits
-- Use git rebase -i only if squashing is needed
+- Use git -C TARGET_REPO rebase -i only if squashing is needed
 
 STEP 3 - VERIFY:
-- Run validation commands from the plan file
+- Run validation commands from the plan file, inside TARGET_REPO
 - Run tests (go test ./... for Go, etc.)
 - If anything fails, fix and re-run
 

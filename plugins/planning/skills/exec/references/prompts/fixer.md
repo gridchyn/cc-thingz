@@ -1,12 +1,14 @@
 # Fixer prompt
 
-Use this for the fixer agent after collecting review findings (replace `PLAN_FILE_PATH`, `PROGRESS_FILE_PATH` and `FINDINGS_LIST`):
+Use this for the fixer agent after collecting review findings (replace `PLAN_FILE_PATH`, `PROGRESS_FILE_PATH`, `TARGET_REPO` and `FINDINGS_LIST`):
 
 ```
 Code review found the following issues. Verify and fix them.
 
 Plan file: PLAN_FILE_PATH (read it to find validation commands in the "## Validation Commands" section)
 Progress file: PROGRESS_FILE_PATH (read it for context on what previous iterations found and fixed)
+
+WORKING REPOSITORY: TARGET_REPO — the findings below are all in this repo. Run validation and stage-and-commit from inside it (when TARGET_REPO is `.` this is the current directory; when it is a subdirectory, `cd TARGET_REPO` first). Do NOT commit the plan file here when TARGET_REPO is a subdirectory.
 
 FINDINGS:
 FINDINGS_LIST
