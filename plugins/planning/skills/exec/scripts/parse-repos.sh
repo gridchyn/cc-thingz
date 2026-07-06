@@ -70,6 +70,9 @@ bases=()
 branches=()
 
 while IFS= read -r line || [ -n "$line" ]; do
+    # tolerate CRLF line endings (plans authored on Windows) — strip a trailing CR
+    # before any header/Branch/bullet matching
+    line=${line%$'\r'}
     if [ "$in_repos" -eq 0 ]; then
         case "$line" in
         "## Repos" | "## Repos "*)
@@ -124,6 +127,21 @@ if [ "${#dirs[@]}" -eq 0 ]; then
     echo "error: '## Repos' section present but lists no repos" >&2
     exit 4
 fi
+
+# reject duplicate repo directories — an ambiguous branching target must be a hard
+# error before anything is branched, regardless of differing base:/branch: overrides
+i=0
+while [ "$i" -lt "${#dirs[@]}" ]; do
+    j=$((i + 1))
+    while [ "$j" -lt "${#dirs[@]}" ]; do
+        if [ "${dirs[$i]}" = "${dirs[$j]}" ]; then
+            echo "error: repo '${dirs[$i]}' listed more than once in '## Repos'" >&2
+            exit 4
+        fi
+        j=$((j + 1))
+    done
+    i=$((i + 1))
+done
 
 i=0
 while [ "$i" -lt "${#dirs[@]}" ]; do

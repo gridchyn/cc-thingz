@@ -18,6 +18,8 @@ CREATE_BRANCH="$EXEC_SCRIPTS_DIR/create-branch.sh"
 DETECT_VCS="$EXEC_SCRIPTS_DIR/detect-vcs.sh"
 DETECT_BRANCH="$EXEC_SCRIPTS_DIR/detect-branch.sh"
 RUN_CODEX="$EXEC_SCRIPTS_DIR/run-codex.sh"
+FINALIZE_BASE="$EXEC_SCRIPTS_DIR/finalize-base.sh"
+COMMITS_SINCE="$EXEC_SCRIPTS_DIR/commits-since.sh"
 
 passed=0
 failed=0
@@ -513,6 +515,159 @@ echo "test 26: run-codex.sh --repo <missing> -> exit 1"
 rc=0
 (PATH="$STUB_DIR:$PATH" bash "$RUN_CODEX" --repo "/no/such/dir/xyzzy" "prompt") >/dev/null 2>&1 || rc=$?
 assert_exit "run-codex --repo missing dir exits 1" "1" "$rc"
+
+echo ""
+echo "3.9.1 regression fixes"
+echo "======================"
+
+# finding 1: detect-vcs/preflight must reject a non-repo-root subdir (git walks up)
+echo ""
+echo "test 27: --repo of a non-root subdir is rejected"
+F1="$(mk_tmp)"
+make_git_repo "$F1" master
+mkdir -p "$F1/sub/deep"
+assert_output "detect-vcs --repo of the root is git" "git" "$(bash "$DETECT_VCS" --repo "$F1")"
+rc=0
+bash "$DETECT_VCS" --repo "$F1/sub/deep" >/dev/null 2>&1 || rc=$?
+assert_exit "detect-vcs --repo of a subdir exits nonzero (not a root)" "1" "$rc"
+rc=0
+out="$(bash "$PREFLIGHT" "$F1/sub/deep=feature/X")" || rc=$?
+assert_exit "preflight fails a non-root subdir" "1" "$rc"
+assert_contains "preflight explains it is not a repo root" "$out" "not a git repository root"
+
+# finding 2: parse-repos must reject duplicate repo dirs (exit 4, nothing branched)
+echo ""
+echo "test 28: duplicate repo dir in ## Repos -> exit 4"
+DUP="$(mk_tmp)/dup.md"
+cat >"$DUP" <<'MD'
+# Dup
+
+## Repos
+
+- `repoA`
+- `repoA` — branch: `feature/other`
+
+## Implementation Steps
+
+### Task 1: x
+
+**Repo:** repoA
+
+- [ ] x
+MD
+rc=0
+err="$(bash "$PARSE_REPOS" "$DUP" 2>&1 1>/dev/null)" || rc=$?
+assert_exit "duplicate repo dir exits 4" "4" "$rc"
+assert_contains "duplicate error names the repo" "$err" "repoA"
+assert_contains "duplicate error explains" "$err" "more than once"
+assert_output "duplicate emits no rows" "" "$(bash "$PARSE_REPOS" "$DUP" 2>/dev/null || true)"
+
+# finding 3: finalize-base picks local base when origin ref is absent, else origin/<base>
+echo ""
+echo "test 29: finalize-base resolves rebase target without a remote"
+F3="$(mk_tmp)"
+git -C "$F3" init -q -b develop
+git -C "$F3" commit --allow-empty -q -m initial
+git -C "$F3" checkout -q -b feature/x
+git -C "$F3" commit --allow-empty -q -m work
+target="$(bash "$FINALIZE_BASE" "$F3" develop)"
+assert_output "local-only develop repo -> target is local 'develop'" "develop" "$target"
+rc=0
+git -C "$F3" rebase "$target" >/dev/null 2>&1 || rc=$?
+assert_output "rebase onto resolved target succeeds" "0" "$rc"
+# a repo with an origin/<base> remote-tracking ref present (no live remote) -> prefer it
+F3B="$(mk_tmp)"
+git -C "$F3B" init -q -b master
+git -C "$F3B" commit --allow-empty -q -m initial
+git -C "$F3B" update-ref refs/remotes/origin/master "$(git -C "$F3B" rev-parse HEAD)"
+assert_output "origin/<base> present -> prefer it" "origin/master" "$(bash "$FINALIZE_BASE" "$F3B" master)"
+
+# finding 5: parse-repos handles CRLF plans identically to LF
+echo ""
+echo "test 30: CRLF plan parses identically to its LF twin"
+LFP="$(mk_tmp)/lf.md"
+CRLFP="$(mk_tmp)/crlf.md"
+cat >"$LFP" <<'MD'
+# X
+
+## Repos
+
+Branch: `feature/DPB-9`
+
+- `repoA`
+- `repoB` — base: `main`
+
+## Implementation Steps
+
+### Task 1: x
+
+**Repo:** repoA
+
+- [ ] x
+MD
+awk '{ printf "%s\r\n", $0 }' "$LFP" >"$CRLFP"
+out_lf="$(bash "$PARSE_REPOS" "$LFP")"
+out_crlf="$(bash "$PARSE_REPOS" "$CRLFP")"
+assert_output "CRLF output equals LF output" "$out_lf" "$out_crlf"
+if printf '%s' "$out_crlf" | grep -q "$(printf '\r')"; then
+    echo "  FAIL: CRLF output still contains a carriage return"
+    failed=$((failed + 1))
+else
+    echo "  PASS: CRLF output has no stray carriage return"
+    passed=$((passed + 1))
+fi
+
+# hardening: commits-since counts only commits added this run (not pre-existing ones)
+echo ""
+echo "test 31: commits-since ignores pre-existing feature-branch commits"
+CS="$(mk_tmp)"
+make_git_repo "$CS" master
+git -C "$CS" checkout -q -b feature/pre
+git -C "$CS" commit --allow-empty -q -m pre1
+git -C "$CS" commit --allow-empty -q -m pre2
+start="$(git -C "$CS" rev-parse HEAD)"
+git -C "$CS" commit --allow-empty -q -m new1
+assert_output "commits-since(start) counts only the new commit" "1" "$(bash "$COMMITS_SINCE" "$CS" "$start")"
+assert_output "sanity: master..HEAD over-counts (3)" "3" "$(git -C "$CS" rev-list --count master..HEAD)"
+
+# hardening: scripts work with a workspace_root-joined nested path
+echo ""
+echo "test 32: scripts accept a workspace_root-joined nested repo path"
+WSN="$(mk_tmp)"
+mkdir -p "$WSN/nested/repoA"
+make_git_repo "$WSN/nested/repoA" develop
+assert_output "detect-branch --repo nested path" "develop" "$(cd "$WSN" && bash "$DETECT_BRANCH" --repo nested/repoA)"
+rc=0
+pf="$(cd "$WSN" && bash "$PREFLIGHT" nested/repoA=feature/X)" || rc=$?
+assert_exit "preflight nested path exit 0" "0" "$rc"
+assert_contains "preflight nested path OK" "$pf" "OK: nested/repoA"
+outn="$(cd "$WSN" && bash "$CREATE_BRANCH" --repo nested/repoA --branch feature/X "$WSN/plan.md" 2>/dev/null | tail -n 1)"
+assert_output "create-branch nested path" "feature/X" "$outn"
+assert_output "nested repo switched to feature branch" "feature/X" "$(git -C "$WSN/nested/repoA" branch --show-current)"
+
+# hardening: preflight --root warns (non-fatal) on a dirty workspace root beyond the plan
+echo ""
+echo "test 33: preflight --root advisory check of the workspace root"
+RT="$(mk_tmp)"
+make_git_repo "$RT" master
+printf '/repoA/\n' >"$RT/.gitignore"
+git -C "$RT" add .gitignore
+git -C "$RT" commit -q -m "ignore sibling repo"
+mkdir -p "$RT/repoA"
+make_git_repo "$RT/repoA" master
+mkdir -p "$RT/docs/plans"
+echo "# plan" >"$RT/docs/plans/p.md"
+rc=0
+o1="$(cd "$RT" && bash "$PREFLIGHT" --root . --plan docs/plans/p.md repoA=feature/X)" || rc=$?
+assert_exit "root with only the plan uncommitted -> exit 0" "0" "$rc"
+assert_contains "root reported OK" "$o1" "OK: root ."
+assert_not_contains "no WARN when only the plan is dirty" "$o1" "WARN"
+echo "junk" >"$RT/unrelated.txt"
+rc=0
+o2="$(cd "$RT" && bash "$PREFLIGHT" --root . --plan docs/plans/p.md repoA=feature/X)" || rc=$?
+assert_exit "dirty root is non-fatal (exit 0)" "0" "$rc"
+assert_contains "dirty root warns" "$o2" "WARN"
+assert_contains "warn mentions changes besides the plan" "$o2" "besides the plan"
 
 # summary
 echo ""

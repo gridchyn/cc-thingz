@@ -4,6 +4,21 @@ This repo ships independent Claude Code plugins. Version headings use values fro
 
 Entries are sorted by plugin version date, newest first.
 
+## planning v3.9.1 - 2026-07-04
+
+### Bug Fixes
+
+- exec multi-repo: `detect-vcs.sh --repo <dir>` now requires the directory to be a git repository *root*. `git rev-parse --git-dir` walks up, so a plain subdir of the workspace-root repo previously resolved to that enclosing repo and could be branched by mistake; `preflight-repos.sh` now FAILs such a dir (the bare single-repo call still works from any subdir)
+- exec multi-repo: `parse-repos.sh` rejects a `## Repos` manifest that lists the same repo directory twice (exit 4, nothing branched) instead of silently branching an ambiguous target
+- exec multi-repo: finalize no longer assumes `origin/<base>` exists. New `finalize-base.sh` does a best-effort, hang-safe fetch (bounded by `timeout`, skipped if unavailable) and rebases onto `origin/<base>` only when that ref resolves, else onto local `<base>` — so finalize works on a repo whose default (e.g. `develop`) has no `origin/HEAD` or pushed remote branch
+- exec seeding: `seed-data.sh` reconciles a pre-manifest install (old only-if-absent seed with no checksum manifest) by force-seeding the current bundled files once, so shipped prompt updates stop being shadowed; genuine user edits are still preserved once a manifest exists. The size-only checksum fallback (hosts without `shasum`) never authorizes a refresh, so a same-size user edit can't be silently clobbered
+- exec multi-repo: `parse-repos.sh` strips trailing `\r`, so a CRLF-authored plan parses identically to its LF twin
+
+### Improvements
+
+- exec multi-repo: touched-repo detection now counts only commits added during the run (new `commits-since.sh` against a per-repo START SHA recorded after branching), so a repo already on a feature branch with pre-existing commits isn't miscounted
+- exec multi-repo: repo directories thread through `workspace_root` consistently, and `preflight-repos.sh --root <dir> --plan <path>` adds an advisory check that warns (non-fatal) when the workspace-root repo has uncommitted changes besides the plan
+
 ## planning v3.9.0 - 2026-07-04
 
 ### New Features

@@ -66,7 +66,13 @@ if [ -n "$repo" ]; then
     cd "$repo"
 fi
 
-vcs=$(bash "$SCRIPT_DIR/detect-vcs.sh")
+# with --repo, require the target to be a git repo ROOT (detect-vcs --repo enforces
+# top-level); bare invocation keeps the walk-up behavior for single-repo subdir use
+if [ -n "$repo" ]; then
+    vcs=$(bash "$SCRIPT_DIR/detect-vcs.sh" --repo .)
+else
+    vcs=$(bash "$SCRIPT_DIR/detect-vcs.sh")
+fi
 
 # derive branch name from plan file path (shared by git and hg paths)
 # e.g., docs/plans/20260329-feature-name.md -> feature-name

@@ -10,12 +10,14 @@ Plan file: PLAN_FILE_PATH (read for validation commands)
 WORKING REPOSITORY: TARGET_REPO — finalize this repo only. `.` means the current directory (single-repo); a subdirectory means a sibling repo (multi-repo), and DEFAULT_BRANCH is that repo's base branch. Every git command below is scoped to it with `git -C TARGET_REPO`; run validation from inside it.
 
 STEP 1 - REBASE:
-- Run: git -C TARGET_REPO fetch origin
-- Run: git -C TARGET_REPO rebase origin/DEFAULT_BRANCH
+- Resolve the rebase target (best-effort, hang-safe fetch + prefer `origin/DEFAULT_BRANCH` if it resolves, else local `DEFAULT_BRANCH`):
+  `target=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/finalize-base.sh TARGET_REPO DEFAULT_BRANCH)`
+- Run: `git -C TARGET_REPO rebase "$target"`
 - If conflicts: resolve and continue. If rebase fails completely: abort with git -C TARGET_REPO rebase --abort and report the issue
+- Do NOT run a bare `git fetch`/`git rebase origin/DEFAULT_BRANCH` yourself — the helper already did the best-effort fetch and chose a target that exists locally, so finalize works on a local-only repo whose default has no pushed remote branch
 
 STEP 2 - CLEAN UP COMMITS:
-- Run: git -C TARGET_REPO log origin/DEFAULT_BRANCH..HEAD --oneline
+- Run: git -C TARGET_REPO log "$target"..HEAD --oneline   (same `$target` from STEP 1)
 - If there are 5+ commits, squash related fix commits into their parent feature commits
 - Keep meaningful boundaries: feature commits separate from review fix commits
 - Use git -C TARGET_REPO rebase -i only if squashing is needed
