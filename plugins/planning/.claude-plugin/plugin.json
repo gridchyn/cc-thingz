@@ -1,7 +1,7 @@
 {
   "name": "planning",
   "description": "Structured implementation planning, interactive annotation review, and autonomous plan execution",
-  "version": "3.8.1",
+  "version": "3.9.0",
   "author": {
     "name": "Umputun"
   },
@@ -44,6 +44,12 @@
       "type": "string",
       "description": "Directory where plan files are located, relative to project root.",
       "default": "docs/plans"
+    },
+    "workspace_root": {
+      "title": "Workspace root",
+      "type": "string",
+      "description": "Root directory for resolving multi-repo target directories (the ## Repos manifest), relative to the current working directory. Default '.' means sibling repos are checked out beside the coordinating plan's repo. Only used by multi-repo exec.",
+      "default": "."
     }
   }
 }
