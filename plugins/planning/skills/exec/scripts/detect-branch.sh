@@ -1,12 +1,46 @@
 #!/bin/bash
-# detect the default branch name of the current repository
+# detect the default branch name of a repository
 # outputs the branch name to stdout
 # avoids network calls when possible
 # VCS-aware: dispatches to git or hg based on detect-vcs.sh
+#
+# operates on the current working directory by default. pass --repo <dir> to
+# detect the default branch of a specific directory instead (used by multi-repo
+# exec); bare invocation is unchanged.
 
 set -e
 
+# SCRIPT_DIR must be resolved before any cd so a relative $0 still works
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# --- multi-repo: optional --repo <dir> target (bare call is unchanged) ---
+repo=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --repo)
+        repo="${2:-}"
+        [ -z "$repo" ] && {
+            echo "error: --repo requires a directory argument" >&2
+            exit 1
+        }
+        shift 2
+        ;;
+    *)
+        echo "error: unexpected argument: $1" >&2
+        exit 1
+        ;;
+    esac
+done
+
+if [ -n "$repo" ]; then
+    [ -d "$repo" ] || {
+        echo "error: repo directory not found: $repo" >&2
+        exit 1
+    }
+    cd "$repo"
+fi
+# --- end multi-repo ---
+
 vcs=$(bash "$SCRIPT_DIR/detect-vcs.sh")
 
 do_git() {

@@ -49,3 +49,5 @@ Ask the make command to manage rules:
 - **exec**: rules propagate to task subagents via the `USER_RULES` placeholder in task prompts
 
 Rules supplement built-in instructions — they never replace them.
+
+In multi-repo plans the same rules apply to every task subagent regardless of which repo the task targets (they are injected via `USER_RULES` per task). Resolution is unchanged: the project-level file is read from the current working directory (the workspace root where the coordinating plan lives), not from each sibling repo.

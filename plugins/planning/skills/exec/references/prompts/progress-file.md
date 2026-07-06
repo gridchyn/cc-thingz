@@ -15,6 +15,8 @@ Started: <timestamp>
 ---
 ```
 
+In multi-repo mode the coordinating plan drives several sibling repos. The `Branch:` line records the feature branch name (shared across repos unless overridden); the specific repo for each task is captured in the per-task line below (e.g. `[task] Task 3 (pgw-core-service): ... — completed`).
+
 **After each task completes:**
 ```
 [task] Task N: <title> — completed

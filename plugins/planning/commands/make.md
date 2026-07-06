@@ -100,6 +100,8 @@ show the discovered context, then ask questions **one at a time** using the AskU
 5. **plan title**: use AskUserQuestion - "short descriptive title?"
    - provide suggested name based on intent
 
+**multi-repo scoping (only when relevant):** if step 0 shows the working directory is a multi-repo workspace (several sibling git repos beside the cwd) or the request clearly spans more than one repository, ask one more AskUserQuestion: which repositories the change touches, and the feature branch name to use (e.g. `feature/DPB-6042`). Record the repo list + branch — they become the `## Repos` section and the per-task `**Repo:**` fields (see "multi-repo plans" in step 2). If the change is single-repo, skip this entirely: a single-repo plan MUST NOT contain a `## Repos` section or any `**Repo:**` field.
+
 after all questions answered, synthesize responses into plan context.
 
 ## step 1.5: explore approaches
@@ -282,6 +284,46 @@ Example (NOTICE: Files block + tests as separate checklist items):
 - configuration changes in deployment systems
 - third-party service integrations to verify
 ```
+
+### multi-repo plans (cross-repo changes only)
+
+Add the two elements below ONLY when the change spans multiple sibling repositories (from the multi-repo scoping question in step 1). A single-repo plan MUST NOT contain either — their presence switches `/planning:exec` into multi-repo mode, where it branches each sibling repo in place and opens one PR per repo.
+
+1. A `## Repos` section, placed right after `## Context (from discovery)`, listing every target repo (directory relative to the workspace root) with an optional default feature `Branch:` and optional per-repo `base:`/`branch:` overrides:
+
+   ```markdown
+   ## Repos
+
+   Branch: `feature/DPB-6042`
+
+   - `pgw-config-service`
+   - `pgw-core-service` — base: `develop`
+   - `pgw-workflow-service` — branch: `feature/DPB-6042-wf`
+   ```
+
+   - `Branch:` is the default feature branch for all listed repos; omit it to derive the branch from the plan filename (date prefix stripped).
+   - `base:` overrides the auto-detected base branch for that repo (default branches vary per repo — `master`, `main`, `develop`); `branch:` overrides the feature branch for that repo.
+
+2. A `**Repo:** <dir>` line under each `### Task N:` header, before its `**Files:**` block. `<dir>` MUST be one of the repos listed in `## Repos`:
+
+   ```markdown
+   ### Task 3: Add core reader for the new column
+
+   **Repo:** pgw-core-service
+
+   **Files:**
+   - Modify: `src/main/java/.../Reader.java`
+
+   - [ ] implement the reader
+   - [ ] write tests (success + error cases)
+   - [ ] run tests - must pass before next task
+   ```
+
+Rules for multi-repo plans:
+- Numbering stays global and sequential across all repos (do NOT restart per repo). Tasks run in plan order, so sequence cross-repo dependencies deliberately — e.g. a config-service migration task before the core-service task that relies on it.
+- Each task's `**Files:**` paths are relative to that task's `**Repo:**`.
+- The trailing "Verify acceptance criteria" and "Update documentation" tasks also need a `**Repo:**` (use the primary repo). Each repo's test command may differ — put the right one in that repo's verification checkboxes.
+- The final "move this plan to `docs/plans/completed/`" checkbox refers to the coordinating plan in the workspace-root repo, which `/planning:exec` archives automatically after finalizing each repo.
 
 ## step 3: next steps
 

@@ -108,6 +108,17 @@ Per plan template rules:
 - Comment style matches project rules
 - Aligns with user-provided custom rules (if loaded above)
 
+#### Multi-repo Targeting (Critical — only when the plan is cross-repo)
+
+A plan is multi-repo when it has a `## Repos` section OR any task carries a `**Repo:**` field. Validate the manifest by running `bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/parse-repos.sh <plan-file>` (exit 0 = multi-repo TSV rows, exit 3 = single-repo, exit 4 = malformed). Then check:
+
+- **Consistency**: if any task has `**Repo:**`, a `## Repos` section MUST exist (parse-repos.sh exit 4 flags this). A single-repo plan must have NEITHER — flag a stray `## Repos`/`**Repo:**` in an otherwise single-repo plan, since it silently switches exec to multi-repo mode.
+- **Referential integrity**: every task's `**Repo:**` value is one of the directories listed in `## Repos`. Flag any task whose `**Repo:**` is missing or names an unlisted repo.
+- **Repos resolvable**: each listed repo directory exists relative to the workspace root and is a git repo. Check with `git -C <dir> rev-parse --git-dir` (or note it if the checkout isn't present in this environment).
+- **Base detectable**: each repo's base branch is either given via `base:` or auto-detectable — spot-check with `bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/detect-branch.sh --repo <dir>`. Flag repos whose default branch can't be determined and have no `base:` override.
+- **Ordering dependencies**: because tasks run in plan order (not grouped by repo), cross-repo dependencies must be sequenced correctly — e.g. a schema/migration task in one repo before the task in another repo that depends on it. Flag any task that depends on work in a repo whose task comes later.
+- **git-only**: multi-repo mode is git-only. Flag any target repo that is Mercurial.
+
 ## Output Format
 
 ```

@@ -2,7 +2,9 @@
 
 This file is a playbook for the main orchestrator session — NOT a prompt to spawn into a subagent. Subagents do not have access to the Agent tool in current Claude Code, so the parallel fanout below must be initiated from the main session.
 
-Resolve placeholders (`DEFAULT_BRANCH`, `PLAN_FILE_PATH`, `PROGRESS_FILE_PATH`, `REVIEW_PHASE`, `RESOLVE_SCRIPT`, `PLUGIN_DATA_DIR`), then follow the instructions below from the main session: launch the specified parallel Agent calls, collect findings from all returned agents, and pass them to the fixer subagent. The orchestrator does NOT fix issues itself — the fixer is a separate subagent that handles fixes.
+Resolve placeholders (`DEFAULT_BRANCH`, `TARGET_REPO`, `PLAN_FILE_PATH`, `PROGRESS_FILE_PATH`, `REVIEW_PHASE`, `RESOLVE_SCRIPT`, `PLUGIN_DATA_DIR`), then follow the instructions below from the main session: launch the specified parallel Agent calls, collect findings from all returned agents, and pass them to the fixer subagent. The orchestrator does NOT fix issues itself — the fixer is a separate subagent that handles fixes.
+
+`TARGET_REPO` is the repository being reviewed — `.` in single-repo mode, or a sibling repo directory in multi-repo mode (where `DEFAULT_BRANCH` is that repo's base branch). Every git command below is scoped to it with `git -C TARGET_REPO`.
 
 ## How to fan out (READ THIS CAREFULLY)
 
@@ -33,11 +35,11 @@ bash RESOLVE_SCRIPT agents/simplification.txt PLUGIN_DATA_DIR
 bash RESOLVE_SCRIPT agents/documentation.txt PLUGIN_DATA_DIR
 ```
 
-For each resolved agent prompt, replace `DEFAULT_BRANCH` with the actual value, then prepend:
+For each resolved agent prompt, replace `DEFAULT_BRANCH` and `TARGET_REPO` with the actual values, then prepend:
 
 "CRITICAL: You are a READ-ONLY reviewer. Do NOT run git stash, git checkout, git reset, or any command that modifies the working tree. Other agents run in parallel. Only use git diff, git log, git show, and read files.
 
-Run `git diff DEFAULT_BRANCH...HEAD` to see all changes. Read the actual source files for full context — do not review from diff alone.
+Run `git -C TARGET_REPO diff DEFAULT_BRANCH...HEAD` to see all changes. All changed files are under TARGET_REPO/ — read the actual source files there for full context (scope every git command to that directory with `-C TARGET_REPO`); do not review from diff alone.
 
 The plan file at PLAN_FILE_PATH describes the goal and requirements — use it to understand what the code is supposed to do.
 
@@ -63,7 +65,7 @@ Do NOT add explanatory prose, recommendations, or commentary. The list goes stra
 
 Used when `REVIEW_PHASE` is `critical`.
 
-Resolve only `quality.txt` and `implementation.txt` using the resolve script. Replace `DEFAULT_BRANCH` in each, then prepend the same READ-ONLY preamble as comprehensive mode, plus:
+Resolve only `quality.txt` and `implementation.txt` using the resolve script. Replace `DEFAULT_BRANCH` and `TARGET_REPO` in each, then prepend the same READ-ONLY preamble as comprehensive mode, plus:
 
 "Report ONLY critical and major issues — bugs, security vulnerabilities, data loss risks, broken functionality, incorrect logic, missing critical error handling. Ignore style, minor improvements, suggestions. Tag every reported finding with severity (CRITICAL or MAJOR) and format each on its own line as: `SEVERITY: file:line — description`."
 

@@ -4,6 +4,20 @@ This repo ships independent Claude Code plugins. Version headings use values fro
 
 Entries are sorted by plugin version date, newest first.
 
+## planning v3.9.0 - 2026-07-04
+
+### New Features
+
+- exec: **multi-repo mode** — a single coordinating plan can now drive a change across several sibling repositories. Auto-detected from the plan (a `## Repos` manifest or per-task `**Repo:**` fields); a plan with no repo targeting behaves exactly as before. In multi-repo mode exec skips the worktree question, pre-flights every target repo read-only then branches each **in place** (never a half-branched set), runs tasks in plan order against their target repo, runs review/finalize/codex per touched repo against its own base branch, aggregates stats across repos, archives the coordinating plan once in the workspace-root repo, and prints a per-repo PR summary — one PR per touched repo. Never pushes. git-only (single-repo hg unaffected).
+- make: emits the multi-repo schema (a `## Repos` manifest with default `Branch:` + per-repo `base:`/`branch:` overrides, and a `**Repo:** <dir>` line per task) when you scope a change as cross-repo. Single-repo plans are unchanged and must contain neither.
+- plan-review: validates multi-repo targeting — referential integrity of each task's `**Repo:**`, resolvable repos, detectable base branches, cross-repo task ordering, git-only.
+- exec: new scripts `parse-repos.sh` (parse the `## Repos` manifest / detect mode) and `preflight-repos.sh` (read-only atomic validation of all target repos); `detect-vcs.sh`, `detect-branch.sh`, `run-codex.sh` gain an optional `--repo <dir>`, and `create-branch.sh` gains `--repo`/`--branch` (explicit-target mode with a dirty-tree guard and a non-fatal warning when leaving a different feature branch). All no-flag paths are unchanged.
+- config: add `workspace_root` userConfig (default `.`) for resolving multi-repo target directories.
+
+### Improvements
+
+- exec: the `SessionStart` seeder (`seed-data.sh`) is now version-aware — on a plugin version bump it refreshes seeded prompts/agents you have *not* edited (tracked via a checksum manifest) and preserves your edits, instead of the old copy-if-absent behavior that silently shadowed shipped prompt updates forever.
+
 ## planning v3.8.1 - 2026-06-29
 
 ### Bug Fixes

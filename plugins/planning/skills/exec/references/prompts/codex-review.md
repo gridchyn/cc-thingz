@@ -4,6 +4,8 @@ This is the prompt sent to codex. Replace `DIFF_COMMAND`, `PLAN_FILE_PATH`, and 
 
 Run: `bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/run-codex.sh "<prompt>"` with `run_in_background: true`. You will be notified when done — do NOT poll or sleep.
 
+In multi-repo mode, run one codex pass per touched repo and add `--repo <dir>` to the invocation (`run-codex.sh --repo <dir> "<prompt>"`): codex then runs with that repo as its working directory, so `DIFF_COMMAND` stays repo-local and `DEFAULT_BRANCH` is that repo's base branch.
+
 - Iteration 1: `DIFF_COMMAND` = `git diff DEFAULT_BRANCH...HEAD`
 - Subsequent: `DIFF_COMMAND` = `git diff`
 

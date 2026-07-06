@@ -1,18 +1,54 @@
 #!/bin/bash
 # run codex review and return output
-# usage: run-codex.sh "<prompt>"
+# usage: run-codex.sh [--repo <dir>] "<prompt>"
 # outputs codex response to stdout
 # VCS-aware: in hg repos, adds --skip-git-repo-check so codex doesn't refuse
+#
+# multi-repo exec passes --repo <dir> so codex reviews a sibling repo (cwd = that
+# repo, so the prompt's diff command and file reads are repo-local). Bare
+# invocation (no --repo) reviews the current directory, unchanged.
 
 set -e
 
-prompt="$1"
+# SCRIPT_DIR must be resolved before any cd so a relative $0 still works
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# --- multi-repo: optional --repo <dir> target (bare call is unchanged) ---
+repo=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --repo)
+        repo="${2:-}"
+        [ -z "$repo" ] && {
+            echo "error: --repo requires a directory argument" >&2
+            exit 1
+        }
+        shift 2
+        ;;
+    --*)
+        echo "error: unknown flag: $1" >&2
+        exit 1
+        ;;
+    *)
+        break
+        ;;
+    esac
+done
+# --- end multi-repo ---
+
+prompt="${1:-}"
 if [ -z "$prompt" ]; then
-    echo "error: usage: run-codex.sh '<prompt>'" >&2
+    echo "error: usage: run-codex.sh [--repo <dir>] '<prompt>'" >&2
     exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -n "$repo" ]; then
+    [ -d "$repo" ] || {
+        echo "error: repo directory not found: $repo" >&2
+        exit 1
+    }
+    cd "$repo"
+fi
 # detect-vcs.sh exits non-zero on non-VCS dirs; set -e propagates so the
 # script aborts before reaching codex with an unknown VCS value
 vcs=$(bash "$SCRIPT_DIR/detect-vcs.sh")

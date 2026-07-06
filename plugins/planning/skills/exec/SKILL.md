@@ -27,6 +27,12 @@ After reading a prompt file, replace ALL placeholders with actual values before 
 
 Always substitute: `PLAN_FILE_PATH`, `PROGRESS_FILE_PATH`, `DEFAULT_BRANCH`, `${CLAUDE_PLUGIN_ROOT}` (resolve to actual absolute path), `RESOLVE_SCRIPT` (absolute path to `${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/resolve-file.sh`), `PLUGIN_DATA_DIR` (resolved `${CLAUDE_PLUGIN_DATA}` path — passed as second argument to resolve-file.sh so it can find user overrides), `USER_RULES` (resolved custom rules content from the rules loading step, or empty string if no rules found), and phase-specific values (`FINDINGS_LIST`, `REVIEW_PHASE`, `DIFF_COMMAND`).
 
+Two more placeholders carry the repo dimension (see Step 1b and the "**Multi-repo:**" callouts):
+- `TARGET_REPO` — the repository a task/fixer/review/finalize subagent operates on. **In single-repo mode always substitute `.`** (`git -C .` is a no-op, so behavior is identical to before). In multi-repo mode substitute the specific repo directory.
+- `REPOS` — stats only: a space-separated list of `<dir>=<base>` entries. **In single-repo mode always substitute `.=DEFAULT_BRANCH`** (with `DEFAULT_BRANCH` resolved). In multi-repo mode, one entry per touched repo.
+
+`DEFAULT_BRANCH` means "the base branch to diff/rebase against": the detected default in single-repo mode, and the current repo's base branch in a multi-repo per-repo phase.
+
 ## Custom Rules Loading
 
 Before starting execution, run this command via Bash tool to check for user-provided custom rules:
@@ -49,7 +55,25 @@ Determine the default branch: `bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/de
 
 Note: in `hg` repos, detect-branch.sh returns `remote/<name>` (checking `master`, `main`, `trunk` in that order) in modern-Mercurial repos that expose upstream default via `remote/<name>` refs, and falls back to `default` in repos that use the traditional named-branch convention instead. The external-review prompt (`prompts/codex-review.md`) and the finalize prompt (`prompts/finalizer.md`) use git-specific commands and are not VCS-translated upstream. Both phases will be skipped (see step 9 and step 11, which re-detect VCS locally). Users who want hg-native review/finalize can override via `.claude/exec-plan/prompts/codex-review.md` and `.claude/exec-plan/prompts/finalizer.md` — any `git rebase origin/DEFAULT_BRANCH` in the bundled template must be replaced with the hg equivalent in the override, e.g. `hg rebase -d remote/master` when the repo exposes remote-tracking refs, or `hg rebase -d default` when it uses the traditional named-branch convention.
 
+### Step 1b. Detect execution mode (single-repo vs multi-repo)
+
+Detect whether this is an ordinary single-repo plan or a cross-repo coordinating plan:
+
+```
+bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/parse-repos.sh <plan-file-path>
+```
+
+- **Exit 3, no output** — **single-repo mode**. Follow Steps 2–13 exactly as written. Throughout, `TARGET_REPO` is `.`, `DEFAULT_BRANCH` is the value from `detect-branch.sh` in Step 1, and `REPOS` is `.=DEFAULT_BRANCH`. Ignore every "**Multi-repo:**" callout below.
+- **Exit 0, TSV rows** — **multi-repo mode**. Each line is tab-separated `<dir>`, `<base>`, `<branch>`: `<dir>` is a sibling repo directory relative to the workspace root, `<base>` is its base branch (may be empty), `<branch>` is its resolved feature branch. Build the repo table and follow the "**Multi-repo:**" callouts in the steps below **instead of** their single-repo text.
+- **Exit 4** — the plan is **malformed** (tasks declare `**Repo:**` without a `## Repos` section, or `## Repos` is empty). STOP and report the stderr message. Do not execute.
+
+**Resolve the repo table (multi-repo only).** Repo directories in `## Repos` are relative to the `workspace_root` userConfig (default `.`, i.e. the current working directory where the coordinating plan lives). When `workspace_root` is not `.`, prefix each `<dir>` with it before passing to any script. For each row whose `<base>` is empty, detect it per repo: `bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/detect-branch.sh --repo <dir>`. Keep the final `<dir> <base> <branch>` table for the whole run.
+
+**Multi-repo model.** The coordinating plan lives in the workspace-root repo, which gets **no** code branch. Each sibling repo is branched **in place** (no worktrees), tasks run in plan order against their declared `**Repo:**`, and review/finalize run per touched repo. The outcome is one feature branch — one PR — per touched sibling repo, plus the coordinating plan archived to `completed/` in the root repo. Multi-repo mode is **git-only**: if `preflight-repos.sh` (Step 4) FAILs a repo as non-git/hg, report the limitation and stop. (Single-repo hg is unaffected — it never enters this path.)
+
 ### Step 2. Ask about worktree isolation
+
+**Multi-repo:** SKIP this entire step — do not ask the worktree question and do not call `EnterWorktree`. Multi-repo mode branches each sibling repo in place; the workspace-root repo (holding the plan) stays on its current branch. Go straight to Step 3.
 
 **hg skip**: Detect VCS with `vcs=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/detect-vcs.sh)`. If `vcs` is `hg`, skip the worktree question and proceed in current directory. The `EnterWorktree` tool is git-only (wraps `git worktree add`) and has no hg equivalent upstream; users who want isolation in hg repos can use `hg share` manually before invoking `/exec`.
 
@@ -110,6 +134,8 @@ Then add review tasks:
 
 Update tasks as you go: `TaskUpdate(taskId, status="in_progress")` when starting, `TaskUpdate(taskId, status="completed")` when done.
 
+**Multi-repo:** include each task's target repo in the subject so the task list is legible, e.g. `TaskCreate(subject="Task N (pgw-core-service): <title>", ...)`. The review/finalize/stats tasks are unchanged (they iterate repos internally).
+
 ### Step 4. Create branch
 
 **MANDATORY**: Run the script below. Do NOT create the branch manually — the script strips the date prefix from the plan filename (e.g., `20260329-feature-name.md` → branch `feature-name`).
@@ -120,11 +146,29 @@ bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/create-branch.sh <plan-file-path>
 
 The script creates a feature branch if currently on main/master, or stays on the current branch if already on a feature branch. Capture and use the branch name it outputs.
 
+**Multi-repo:** do NOT run the single-repo `create-branch.sh <plan>` above. Instead branch every sibling repo in place, atomically:
+
+1. Build a spec list `<dir>=<branch>` from the repo table (Step 1b).
+2. **Pre-flight (mandatory, read-only, atomic):**
+   ```
+   bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/preflight-repos.sh <dir1>=<branch1> <dir2>=<branch2> ...
+   ```
+   If it exits non-zero, STOP before creating ANY branch and report the `FAIL:` line(s) verbatim — never leave a half-branched set. Show any `WARN:` lines to the user (e.g. a repo already on a different feature branch) but continue.
+3. Only if pre-flight passed, create/switch each repo's branch:
+   ```
+   bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/create-branch.sh --repo <dir> --branch <branch> <plan-file-path>
+   ```
+   Capture each repo's branch. If any `create-branch.sh` exits non-zero, STOP and report which repo failed.
+
+Report the per-repo branch set to the user.
+
 ### Step 5. Initialize progress file
 
 Initialize the progress file: `bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/init-progress.sh /tmp/progress-<plan-name>.txt <plan-file-path> <branch-name>` (derive `<plan-name>` from the plan file stem, e.g., `fix-issues.md` → `progress-fix-issues`). The script creates the file with a header. Report the full progress file path to the user.
 
 IMPORTANT: Always use `${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/append-progress.sh` to write to the progress file after initialization. Never write directly.
+
+**Multi-repo:** pass the shared feature branch name as `<branch-name>` (or `<branch> (N repos)` when repos use different branch names). The progress file lives in `/tmp` regardless of repo.
 
 ### Step 6. Task loop
 
@@ -145,7 +189,8 @@ Repeat until no `[ ]` checkboxes remain in any Task section:
 5. **Spawn a subagent** using Agent tool with:
    - `mode: "bypassPermissions"`
    - `subagent_type: "general-purpose"`
-   - The task prompt from `prompts/task.md`, with all placeholders substituted as described in the Placeholder Substitution section above (including `USER_RULES`)
+   - The task prompt from `prompts/task.md`, with all placeholders substituted as described in the Placeholder Substitution section above (including `USER_RULES` and `TARGET_REPO`)
+   - **Multi-repo:** set `TARGET_REPO` to the current task's `**Repo:**` value (read the `**Repo:**` line under the `### Task N:` header). It MUST be one of the repos in the table from Step 1b — if a task has no `**Repo:**`, or names an unknown repo, STOP and report. Single-repo: `TARGET_REPO` is `.`.
 6. **After subagent returns**, re-read the plan file and check if that task's checkboxes are now `[x]`
    - If yes — task succeeded, continue loop
    - If no — **retry** with a fresh subagent for the same task up to `task_retries` times (userConfig, default: 1). If all retries fail, stop and report failure to user
@@ -163,11 +208,13 @@ Maximum iterations safety limit: 50. If reached, stop and report to user.
 
 After all tasks complete, run a comprehensive code review on iteration 1, then narrow to critical-only re-checks on subsequent iterations to verify the fixer's work without re-running the full heavy sweep.
 
+**Multi-repo:** run Steps 7–11 **once per touched repo**. A repo is "touched" if it has commits on its feature branch — check `git -C <dir> log <base>..HEAD --oneline` (non-empty). Skip untouched repos. For each touched repo, substitute `TARGET_REPO=<dir>` and `DEFAULT_BRANCH=<base>` (that repo's base) everywhere in this phase, and run the full loop below scoped to that repo. Announce each repo, e.g. "--- Review phase 1 [pgw-core-service]: comprehensive ---".
+
 Report to user: "--- Review phase 1: comprehensive ---"
 
 Loop up to `review_iterations` times (userConfig, default: 5). Track the current iteration number:
 
-1. **Read review.md as a playbook (NOT as a subagent prompt)** — resolve `prompts/review.md` through the override chain and read it from this main session. It tells YOU (the orchestrator) which specialist agents to fan out for the current `REVIEW_PHASE`. Substitute `DEFAULT_BRANCH`, `PLAN_FILE_PATH`, `PROGRESS_FILE_PATH`, `${CLAUDE_PLUGIN_ROOT}`, and `REVIEW_PHASE` in the resolved content. Then follow the playbook FROM THIS SESSION: launch the specified Agent tool calls in a single message for parallel execution. Subagents do not have Agent tool access, so the fanout MUST be initiated from the main orchestrator.
+1. **Read review.md as a playbook (NOT as a subagent prompt)** — resolve `prompts/review.md` through the override chain and read it from this main session. It tells YOU (the orchestrator) which specialist agents to fan out for the current `REVIEW_PHASE`. Substitute `DEFAULT_BRANCH`, `TARGET_REPO`, `PLAN_FILE_PATH`, `PROGRESS_FILE_PATH`, `${CLAUDE_PLUGIN_ROOT}`, and `REVIEW_PHASE` in the resolved content (single-repo: `TARGET_REPO=.`). Then follow the playbook FROM THIS SESSION: launch the specified Agent tool calls in a single message for parallel execution. Subagents do not have Agent tool access, so the fanout MUST be initiated from the main orchestrator.
    - **Iteration 1**: set `REVIEW_PHASE` to `comprehensive`. Per the playbook, launch 5 parallel review agents (quality, implementation, testing, simplification, documentation).
    - **Iteration 2 and later**: set `REVIEW_PHASE` to `critical`. Per the playbook, launch 2 parallel review agents (quality, implementation) focused on critical/major issues only. Before this iteration, report to user: "--- Review phase 1: critical re-check (iteration N) ---"
 
@@ -186,6 +233,8 @@ If `review_iterations` reached with issues still found, report "Review phase 1: 
 ### Step 8. Review phase 2 — code smells
 
 Report to user: "--- Review phase 2: code smells analysis ---"
+
+**Multi-repo:** run once per touched repo (same "touched" set as Step 7). `agents/smells.txt` has no repo placeholder, so prepend a repo-scoping line to the resolved prompt: "You are reviewing the repository at `<dir>`: scope every git command with `git -C <dir>` (diff against `<base>`) and read files under `<dir>/`." Run the smells agent + fixer with `TARGET_REPO=<dir>` for each touched repo.
 
 Run once (no loop):
 
@@ -206,6 +255,8 @@ Run once (no loop):
 **hg skip**: Detect VCS with `vcs=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/detect-vcs.sh)`. If `vcs` is `hg`, skip this entire step. Report to user: "hg detected — skipping external review (git-only). Override `prompts/codex-review.md` via `.claude/exec-plan/` to enable hg-native review." Proceed directly to step 10.
 
 Report to user: "--- Review phase 3: codex external review ---"
+
+**Multi-repo:** run the codex loop below once per touched repo. Add `--repo <dir>` to the runner (`run-codex.sh --repo <dir> "<prompt>"`) so codex's working directory is that repo; `DIFF_COMMAND` stays repo-local and `DEFAULT_BRANCH` is that repo's base. Give the fixer `TARGET_REPO=<dir>`.
 
 Adversarial loop: codex reviews the code, fixer evaluates and fixes, codex re-reviews. The loop exits early once an iteration produces no `CRITICAL` or `MAJOR` findings — minor-only iterations still get fixed by the fixer, but no further codex round-trip happens. Subsequent phases (smells, critical-only) act as the final safety net.
 
@@ -240,6 +291,8 @@ If `external_review_iterations` reached with critical/major issues still found, 
 
 Report to user: "--- Review phase 4: critical/major only (single pass) ---"
 
+**Multi-repo:** run once per touched repo, substituting `TARGET_REPO=<dir>` and `DEFAULT_BRANCH=<base>` (same as Step 7).
+
 Same structure as step 7 but with `REVIEW_PHASE` set to `critical`. Resolve `prompts/review.md` and follow its playbook FROM THIS MAIN SESSION — launch 2 parallel review agents (quality, implementation) focusing on critical/major issues only. Subagents do not have Agent tool access, so the fanout MUST be initiated from the main orchestrator. Same fixer flow — pass findings to fixer, show FIXES to user.
 
 ### Step 11. Finalize
@@ -252,15 +305,19 @@ After all reviews pass, rebase and clean up commits.
 
 Report to user: "--- Finalize: rebase and clean up commits ---"
 
-Spawn one Agent tool call with `mode: "bypassPermissions"`, `subagent_type: "general-purpose"`, and the prompt from `prompts/finalizer.md`. Replace `DEFAULT_BRANCH`, `PLAN_FILE_PATH`, and `PROGRESS_FILE_PATH`.
+Spawn one Agent tool call with `mode: "bypassPermissions"`, `subagent_type: "general-purpose"`, and the prompt from `prompts/finalizer.md`. Replace `DEFAULT_BRANCH`, `TARGET_REPO`, `PLAN_FILE_PATH`, and `PROGRESS_FILE_PATH` (single-repo: `TARGET_REPO=.`).
+
+**Multi-repo:** run the finalizer once per touched repo, substituting `TARGET_REPO=<dir>` and `DEFAULT_BRANCH=<base>` (that repo's base). The coordinating (root) repo is not finalized — it only holds the plan.
 
 This is best-effort — if rebase fails, report the issue but don't block completion.
 
 ### Step 12. Stats summary
 
-After finalize (or after step 11 was skipped on hg/disabled), spawn one Agent tool call with `mode: "bypassPermissions"`, `subagent_type: "general-purpose"`, and the prompt from `prompts/stats.md`. Replace `DEFAULT_BRANCH` and `PROGRESS_FILE_PATH` in the resolved content.
+After finalize (or after step 11 was skipped on hg/disabled), spawn one Agent tool call with `mode: "bypassPermissions"`, `subagent_type: "general-purpose"`, and the prompt from `prompts/stats.md`. Replace `REPOS` and `PROGRESS_FILE_PATH` in the resolved content. In single-repo mode substitute `REPOS` as `.=<DEFAULT_BRANCH>` (one entry, DEFAULT_BRANCH resolved).
 
-The stats agent reads this session's main log + subagent logs from `~/.claude/projects/<cwd-encoded>/`, aggregates per-phase token/duration/tool-use counts, runs `git diff --shortstat DEFAULT_BRANCH...HEAD` for branch churn, and returns a compact markdown report.
+**Multi-repo:** substitute `REPOS` as the space-separated `<dir>=<base>` list of the touched repos (from Step 7's touched set). The session/token/duration stats stay session-wide (read from the root session log dir as usual); only the branch churn is computed per repo and aggregated.
+
+The stats agent reads this session's main log + subagent logs from `~/.claude/projects/<cwd-encoded>/`, aggregates per-phase token/duration/tool-use counts, runs `git -C <dir> diff --shortstat <base>...HEAD` per repo in `REPOS` for branch churn, and returns a compact markdown report.
 
 Show the stats agent's full markdown output to the user verbatim. Do NOT summarize it further — the agent already produces a tight summary.
 
@@ -272,6 +329,8 @@ When stats summary is done (or skipped on failure):
 - Log completion to progress file: `bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/append-progress.sh <progress-file> "completed"`
 - Move the finished plan into its `completed/` subdirectory and commit it (best-effort): `bash ${CLAUDE_PLUGIN_ROOT}/skills/exec/scripts/move-plan.sh <plan-file-path>`. The script is a no-op when the plan is already under `completed/` or missing, derives the target as a `completed/` sibling of the plan's directory (so it respects a custom `plans_dir` and worktrees), and commits the move VCS-aware (git/hg). Do NOT push. If the script exits non-zero, report the failure but do not block completion.
 - Report the final line "All N tasks completed, reviews passed, branch finalized". Append ", plan moved to completed/" ONLY when move-plan.sh actually moved the file (it printed `moved plan to ...`); omit the suffix when the move was a no-op (already under `completed/` or missing) or exited non-zero
+
+**Multi-repo:** `move-plan.sh` runs in the workspace-root repo exactly as above (the plan lives there — the root is the current working directory, so no `--repo` is needed). Do NOT push anything. Then print a **per-repo summary table** so the user can open one PR per repo — for each touched repo: `<dir>` → feature `<branch>` → commit count (`git -C <dir> log <base>..HEAD --oneline | wc -l`) → test/review status. List any repos that were declared but left untouched (no commits) separately.
 
 ## Key rules
 
@@ -288,3 +347,4 @@ When stats summary is done (or skipped on failure):
 - All prompt and agent files MUST be resolved through the three-layer override chain before use
 - All `subagent_type` values must be `general-purpose` — agent files provide the specialized prompt
 - After reading a prompt file, substitute all placeholders before passing to subagent (see Placeholder Substitution)
+- Multi-repo mode (detected in Step 1b): branch/commit each sibling repo IN PLACE on its own feature branch, run tasks in plan order against each task's `**Repo:**`, review/finalize per touched repo, archive the coordinating plan once in the root repo, and NEVER push. Pre-flight all repos before branching any (Step 4) so a half-branched set can never happen. The workspace-root repo never gets a code branch. Single-repo behavior is unchanged when no `## Repos`/`**Repo:**` is present.
