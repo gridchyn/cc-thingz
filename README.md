@@ -192,7 +192,7 @@ Structured implementation planning with interactive annotation review and autono
 | Component | Trigger | Description |
 |-----------|---------|-------------|
 | command | `/planning:make <desc>` | Structured implementation plan with interactive review loop |
-| skill | `/planning:exec [plan-file]` | Autonomous plan executor — task loop, multi-phase review, optional finalize |
+| skill | `/planning:exec [plan-file]` | Autonomous plan executor — task loop, multi-phase review, optional finalize; single-repo or multi-repo |
 | hook | `PreToolUse` / CLI | Plan annotation in `$EDITOR` with diff-based feedback loop |
 | agent | `plan-review` | Automated plan quality review — completeness, over-engineering, testing |
 
@@ -243,7 +243,9 @@ Run tests: `python3 plugins/planning/scripts/plan-annotate.py --test`
 
 Review agents are read-only reporters. The fixer agent evaluates each finding, fixes confirmed issues, rejects false positives, and reports back.
 
-**VCS support** — the exec helper scripts are VCS-aware and work in both git and Mercurial (hg) repositories. The finalize and external-review phases remain git-only, but their behaviour can be customised for hg via `.claude/exec-plan/prompts/finalizer.md` and `.claude/exec-plan/prompts/codex-review.md` overrides.
+**Multi-repo mode** — a single coordinating plan can drive a change across several sibling repositories. Exec auto-detects it from the plan: a `## Repos` manifest (listing each target repo with an optional default `Branch:` and per-repo `base:`/`branch:` overrides) plus a `**Repo:** <dir>` field on each task. A plan with neither runs as an ordinary single-repo plan, byte-for-byte as before. In multi-repo mode exec skips the worktree question, pre-flights every target repo read-only and then branches each **in place** (stopping before touching any repo if one would fail — never a half-branched set), runs tasks in plan order against their target repo, runs review/finalize/codex per touched repo against that repo's own base branch, aggregates stats across repos, archives the coordinating plan once in the workspace-root repo, and prints a per-repo summary so you open one PR per touched repo. It never pushes. Multi-repo mode is git-only. `/planning:make` emits the schema when you scope a change as cross-repo; `plan-review` validates it. See `plugins/planning/references/usage.md` for the full schema, behavior, and the consumer-handoff steps (including the one-time seeded-prompt clear after upgrading).
+
+**VCS support** — the exec helper scripts are VCS-aware and work in both git and Mercurial (hg) repositories. The finalize and external-review phases remain git-only, but their behaviour can be customised for hg via `.claude/exec-plan/prompts/finalizer.md` and `.claude/exec-plan/prompts/codex-review.md` overrides. Multi-repo mode is git-only (single-repo hg is unaffected).
 
 **Customization** — prompts and agent definitions use a three-layer override chain (checked in order, first match wins):
 1. Project: `.claude/exec-plan/prompts/` and `.claude/exec-plan/agents/`
@@ -254,11 +256,13 @@ To customize, place your modified version in the override path. For example, to 
 ```
 .claude/exec-plan/prompts/review.md
 ```
-Or at the user level (applies to all projects). A `SessionStart` hook copies bundled defaults to `${CLAUDE_PLUGIN_DATA}` on first run — edit the copies there to customize. To find the directory, run `ls ~/.claude/plugins/data/` and look for the planning plugin entry:
+Or at the user level (applies to all projects). A `SessionStart` hook (`seed-data.sh`) copies bundled defaults to `${CLAUDE_PLUGIN_DATA}` on first run — edit the copies there to customize. To find the directory, run `ls ~/.claude/plugins/data/` and look for the planning plugin entry:
 ```
 ~/.claude/plugins/data/<plugin-id>/prompts/review.md
 ```
 Same pattern works for any prompt or agent file — just mirror the path under the override directory.
+
+The seeder is **version-aware**: on a plugin version bump it refreshes seeded files you have *not* edited (tracked via a checksum manifest) and preserves your edits; project-level overrides in `.claude/exec-plan/` always win regardless. One caveat: when upgrading *onto* the version-aware seeder from an older install, delete the stale seeded copies once so new bundled prompts take effect — `rm -rf ~/.claude/plugins/data/<plugin-id>/{prompts,agents} ~/.claude/plugins/data/<plugin-id>/.seed-{version,manifest}` — after which future upgrades refresh automatically. See `plugins/planning/references/usage.md` (Consumer handoff).
 
 Bundled prompts: `task.md`, `fixer.md`, `review.md`, `codex-review.md`, `finalizer.md`, `stats.md`, `progress-file.md`
 Bundled agents: `quality.txt`, `implementation.txt`, `testing.txt`, `simplification.txt`, `documentation.txt`, `smells.txt`

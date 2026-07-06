@@ -28,6 +28,7 @@ The planning plugin has three components: make (plan creation), exec (autonomous
 - Implementation Steps with `### Task N:` sections
 - Each task has `**Files:**` block and `[ ]` checkboxes
 - Progress tracking with `[x]`, `➕`, `⚠️` markers
+- **Multi-repo (optional):** a `## Repos` manifest plus a `**Repo:** <dir>` line per task turn the plan into a cross-repo coordinating plan (see [Multi-repo mode](#multi-repo-mode)). Omit both for an ordinary single-repo plan.
 
 ## Exec — `/planning:exec`
 
@@ -44,6 +45,8 @@ The planning plugin has three components: make (plan creation), exec (autonomous
 6. Optional finalize: rebase and squash commits
 7. Stats summary: aggregate per-phase tokens/duration + git diff stats and report
 
+Exec auto-detects **multi-repo mode** from the plan (a `## Repos` manifest or per-task `**Repo:**` fields). In that mode it skips the worktree question, branches each sibling repo in place, runs tasks in plan order against their target repo, reviews/finalizes each touched repo against its own base branch, and prints a per-repo PR summary. A plan with no repo targeting behaves exactly as before. See [Multi-repo mode](#multi-repo-mode).
+
 ### Configuration
 Set via `userConfig` in plugin.json (prompted at install):
 
@@ -55,6 +58,7 @@ Set via `userConfig` in plugin.json (prompted at install):
 | `external_review_iterations` | `10` | max external review iterations |
 | `finalize_enabled` | `true` | run rebase + squash phase |
 | `plans_dir` | `docs/plans` | directory for plan files |
+| `workspace_root` | `.` | root for resolving multi-repo target dirs (relative to cwd); only used in multi-repo mode |
 
 ### Customization
 Prompts and agent definitions use a three-layer override chain:
@@ -62,7 +66,7 @@ Prompts and agent definitions use a three-layer override chain:
 2. User: `$CLAUDE_PLUGIN_DATA/prompts/` and `$CLAUDE_PLUGIN_DATA/agents/`
 3. Bundled defaults
 
-A `SessionStart` hook copies bundled defaults to `$CLAUDE_PLUGIN_DATA` on first run — edit the copies to customize.
+A `SessionStart` hook (`skills/exec/scripts/seed-data.sh`) copies bundled defaults to `$CLAUDE_PLUGIN_DATA` on first run — edit the copies to customize. The seeder is **version-aware**: on a plugin version bump it refreshes seeded files you have *not* edited (tracked via a checksum manifest) and leaves your edits untouched. Project overrides in `.claude/exec-plan/` always win regardless. (See [Consumer handoff](#consumer-handoff-using-this-fork) for the one-time clear needed when upgrading *onto* the version-aware seeder.)
 
 ### Customization patterns
 
@@ -100,3 +104,61 @@ After creating a plan, make offers interactive review via:
 - **plan-annotate.py** (fallback) — opens plan in `$EDITOR` via terminal overlay
 
 Both loop until the user quits without annotations.
+
+## Multi-repo mode
+
+A single coordinating plan can drive a change that spans several sibling repositories (e.g. a schema migration that must land in one repo before dependent code in another). Exec detects multi-repo mode automatically and keeps single-repo behavior 100% unchanged when no repo targeting is present.
+
+### Plan schema
+
+Two additions to an ordinary plan switch it into multi-repo mode:
+
+1. A `## Repos` manifest (place it right after `## Context (from discovery)`):
+
+   ```markdown
+   ## Repos
+
+   Branch: `feature/DPB-6042`
+
+   - `pgw-config-service`
+   - `pgw-core-service` — base: `develop`
+   - `pgw-workflow-service` — branch: `feature/DPB-6042-wf`
+   ```
+
+   - Directories are relative to `workspace_root` (default `.`).
+   - `Branch:` is the default feature branch for all repos; omit it to derive the branch from the plan filename.
+   - Per-repo `base:` overrides the auto-detected base branch; per-repo `branch:` overrides the feature branch.
+
+2. A `**Repo:** <dir>` line under each `### Task N:` header (before its `**Files:**` block). The value must be one of the repos in `## Repos`.
+
+A plan with **neither** runs as a normal single-repo plan. `/planning:make` emits these only when you tell it the change is cross-repo.
+
+### Behavior
+
+- **Branching (in place, no worktrees):** exec pre-flights every target repo read-only (exists, is git, clean tree, not on a foreign feature branch) and only then creates/switches each repo's feature branch. If any repo fails pre-flight it stops before branching any — never a half-branched set. The workspace-root repo (holding the plan) gets no code branch.
+- **Tasks run in plan order** (not grouped by repo), each against its `**Repo:**`, committing that repo's code on its feature branch. Order cross-repo dependencies deliberately.
+- **Review + finalize run per touched repo** (a repo with commits on its feature branch), each scoped to that repo's diff and base branch. Stats aggregate churn across repos.
+- **One PR per touched repo.** Exec archives the coordinating plan to `docs/plans/completed/` in the root repo, prints a per-repo summary (repo → branch → commits → status), and never pushes.
+- **git-only.** Multi-repo mode requires git for every target repo (single-repo hg is unaffected).
+
+### Constraints
+
+- Run exec from the workspace root (where the coordinating plan lives). Sibling repos must be checked out beside it (resolved via `workspace_root`).
+- Each repo may have a different default branch — exec detects per repo, never hardcodes.
+
+## Consumer handoff (using this fork)
+
+To use this fork's planning plugin from your own Claude Code:
+
+1. **Point your marketplace at the fork.** Add it to `extraKnownMarketplaces` in your Claude Code settings (or `/plugin marketplace add <owner>/<repo>`), then install/enable the `planning` plugin from it.
+2. **Clear stale seeded prompts once (only when upgrading onto the version-aware seeder).** Existing installs seeded prompts/agents into the plugin data dir with the old copy-if-absent hook, which never refreshed them. The new seeder can't tell those pre-existing copies from user edits (no checksum manifest yet), so it leaves them in place on the first run — meaning the new multi-repo prompts would be shadowed. Clear them once so the new bundled prompts take effect:
+
+   ```bash
+   rm -rf "$HOME/.claude/plugins/data/<plugin-id>/prompts" \
+          "$HOME/.claude/plugins/data/<plugin-id>/agents" \
+          "$HOME/.claude/plugins/data/<plugin-id>/.seed-version" \
+          "$HOME/.claude/plugins/data/<plugin-id>/.seed-manifest"
+   ```
+
+   (`<plugin-id>` is the planning plugin's data directory under `~/.claude/plugins/data/`.) The next session re-seeds fresh copies and writes a manifest. **After this one-time clear, future upgrades refresh automatically** and preserve any edits you make to the seeded copies.
+3. **Prefer project-level overrides** for customization: files in `.claude/exec-plan/prompts/` and `.claude/exec-plan/agents/` always win at resolve time and are never touched by the seeder — no clearing needed.
